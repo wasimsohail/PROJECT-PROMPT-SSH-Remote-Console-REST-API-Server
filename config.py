@@ -48,7 +48,9 @@ class Config:
             'enable_audit_log': 'true',
             'rate_limit_enabled': 'true',
             'rate_limit_requests': '100',
-            'rate_limit_window': '60'
+            'rate_limit_window': '60',
+            'cors_enabled': 'false',
+            'cors_origins': ''
         }
 
         self.config['logging'] = {
@@ -141,6 +143,19 @@ class Config:
     def rate_limit_window(self) -> int:
         """Get rate limit window in seconds"""
         return int(os.getenv('RATE_LIMIT_WINDOW', self.config.get('security', 'rate_limit_window', fallback='60')))
+
+    @property
+    def cors_enabled(self) -> bool:
+        """Check if CORS is enabled"""
+        return os.getenv('CORS_ENABLED', self.config.get('security', 'cors_enabled', fallback='false')).lower() == 'true'
+
+    @property
+    def cors_origins(self) -> List[str]:
+        """Get list of allowed CORS origins"""
+        origins_str = os.getenv('CORS_ORIGINS', self.config.get('security', 'cors_origins', fallback=''))
+        if not origins_str:
+            return []
+        return [origin.strip() for origin in origins_str.split(',')]
 
     # Logging Configuration
     @property

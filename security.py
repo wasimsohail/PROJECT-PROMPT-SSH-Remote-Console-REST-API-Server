@@ -2,6 +2,7 @@
 Security and authentication for SSH Console API Server
 """
 import ipaddress
+import threading
 from typing import Optional
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
@@ -18,7 +19,7 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 class RateLimiter:
-    """Rate limiter implementation"""
+    """Thread-safe rate limiter implementation"""
 
     def __init__(self, max_requests: int, window_seconds: int):
         """
@@ -31,6 +32,7 @@ class RateLimiter:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self.requests = defaultdict(deque)
+        self.lock = threading.Lock()
 
     def is_allowed(self, identifier: str) -> bool:
         """
@@ -42,21 +44,22 @@ class RateLimiter:
         Returns:
             True if request is allowed, False otherwise
         """
-        now = datetime.utcnow()
-        cutoff = now - timedelta(seconds=self.window_seconds)
+        with self.lock:
+            now = datetime.utcnow()
+            cutoff = now - timedelta(seconds=self.window_seconds)
 
-        # Clean old requests
-        request_times = self.requests[identifier]
-        while request_times and request_times[0] < cutoff:
-            request_times.popleft()
+            # Clean old requests
+            request_times = self.requests[identifier]
+            while request_times and request_times[0] < cutoff:
+                request_times.popleft()
 
-        # Check if under limit
-        if len(request_times) >= self.max_requests:
-            return False
+            # Check if under limit
+            if len(request_times) >= self.max_requests:
+                return False
 
-        # Add current request
-        request_times.append(now)
-        return True
+            # Add current request
+            request_times.append(now)
+            return True
 
     def get_remaining(self, identifier: str) -> int:
         """
@@ -68,15 +71,16 @@ class RateLimiter:
         Returns:
             Number of remaining requests
         """
-        now = datetime.utcnow()
-        cutoff = now - timedelta(seconds=self.window_seconds)
+        with self.lock:
+            now = datetime.utcnow()
+            cutoff = now - timedelta(seconds=self.window_seconds)
 
-        # Clean old requests
-        request_times = self.requests[identifier]
-        while request_times and request_times[0] < cutoff:
-            request_times.popleft()
+            # Clean old requests
+            request_times = self.requests[identifier]
+            while request_times and request_times[0] < cutoff:
+                request_times.popleft()
 
-        return max(0, self.max_requests - len(request_times))
+            return max(0, self.max_requests - len(request_times))
 
 
 # Global rate limiter instance

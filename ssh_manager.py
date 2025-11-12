@@ -136,15 +136,19 @@ class SSHManager:
                 if request.private_key:
                     # Load private key from string
                     key_file = io.StringIO(request.private_key)
+                    pkey = None
                     try:
                         pkey = paramiko.RSAKey.from_private_key(key_file)
-                    except:
+                    except (paramiko.SSHException, ValueError):
                         key_file.seek(0)
                         try:
                             pkey = paramiko.Ed25519Key.from_private_key(key_file)
-                        except:
+                        except (paramiko.SSHException, ValueError):
                             key_file.seek(0)
-                            pkey = paramiko.ECDSAKey.from_private_key(key_file)
+                            try:
+                                pkey = paramiko.ECDSAKey.from_private_key(key_file)
+                            except (paramiko.SSHException, ValueError):
+                                raise ValueError("Unable to load private key. Unsupported key format.")
                     connect_kwargs['pkey'] = pkey
                 elif request.private_key_path:
                     connect_kwargs['key_filename'] = request.private_key_path
@@ -259,13 +263,17 @@ class SSHManager:
         Raises:
             Exception: If session not found or execution fails
         """
-        # Get session
+        # Get session and client reference
         with self.lock:
             session = self.sessions.get(session_id)
             if not session:
                 raise Exception(f"Session {session_id} not found")
             if session.status != SessionStatus.CONNECTED:
                 raise Exception(f"Session {session_id} is not connected")
+            # Keep reference to client and session info
+            ssh_client = session.client
+            session_host = session.host
+            session_username = session.username
 
         command_id = str(uuid.uuid4())
         start_time = time.time()
@@ -276,7 +284,7 @@ class SSHManager:
             output, error, exit_code = await loop.run_in_executor(
                 None,
                 self._execute_command_blocking,
-                session.client,
+                ssh_client,
                 command,
                 timeout
             )
@@ -294,16 +302,18 @@ class SSHManager:
                 execution_time=execution_time
             )
 
-            # Update session
+            # Update session (re-acquire lock)
             with self.lock:
-                session.last_activity = datetime.utcnow()
-                session.output_buffer += output + error
-                session.command_history.append(command_record)
+                session = self.sessions.get(session_id)
+                if session:  # Session might have been closed
+                    session.last_activity = datetime.utcnow()
+                    session.output_buffer += output + error
+                    session.command_history.append(command_record)
 
             # Log command execution
             if audit_logger:
                 audit_logger.log_command(
-                    session_id, session.host, session.username,
+                    session_id, session_host, session_username,
                     command, exit_code, error
                 )
 
@@ -396,33 +406,36 @@ class SSHManager:
         Returns:
             True if closed successfully, False if session not found
         """
+        # Get session and remove from dict first
         with self.lock:
             session = self.sessions.get(session_id)
             if not session:
                 return False
 
-            try:
-                # Close shell channel if exists
-                if session.shell_channel:
-                    session.shell_channel.close()
+            # Remove from sessions dict immediately
+            del self.sessions[session_id]
+            session.status = SessionStatus.DISCONNECTED
 
-                # Close SSH client
-                session.client.close()
-                session.status = SessionStatus.DISCONNECTED
+        # Close connections outside the lock (they may block)
+        try:
+            # Close shell channel if exists
+            if session.shell_channel:
+                session.shell_channel.close()
 
-                # Log session closure
-                if audit_logger:
-                    audit_logger.log_session_close(session_id, session.host, reason)
+            # Close SSH client
+            session.client.close()
 
-                # Remove from sessions
-                del self.sessions[session_id]
+            # Log session closure
+            if audit_logger:
+                audit_logger.log_session_close(session_id, session.host, reason)
 
-                logger.info(f"Session {session_id} closed: {reason}")
-                return True
+            logger.info(f"Session {session_id} closed: {reason}")
+            return True
 
-            except Exception as e:
-                logger.error(f"Error closing session {session_id}: {e}")
-                return False
+        except Exception as e:
+            logger.error(f"Error closing session {session_id}: {e}")
+            # Session was already removed from dict, so still return True
+            return True
 
     async def get_output(self, session_id: str, clear: bool = False) -> Tuple[str, datetime]:
         """
@@ -511,7 +524,8 @@ class SSHManager:
 
     async def close_all_sessions(self):
         """Close all active sessions"""
-        session_ids = list(self.sessions.keys())
+        with self.lock:
+            session_ids = list(self.sessions.keys())
         for session_id in session_ids:
             await self.close_session(session_id, reason="shutdown")
 

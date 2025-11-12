@@ -43,11 +43,20 @@ class CreateSessionRequest(BaseModel):
     timeout: int = Field(30, description="Connection timeout in seconds", ge=1, le=300)
     label: Optional[str] = Field(None, description="Custom label for the session")
 
-    @field_validator('password', 'private_key', 'private_key_path')
+    @field_validator('password', 'private_key', 'private_key_path', mode='after')
     @classmethod
     def validate_auth(cls, v, info):
         """Ensure proper authentication credentials are provided"""
         return v
+
+    def model_post_init(self, __context):
+        """Validate authentication credentials match auth_type"""
+        if self.auth_type == AuthType.PASSWORD:
+            if not self.password:
+                raise ValueError("Password is required when auth_type is 'password'")
+        elif self.auth_type == AuthType.KEY:
+            if not self.private_key and not self.private_key_path:
+                raise ValueError("Either private_key or private_key_path is required when auth_type is 'key'")
 
 
 class ExecuteCommandRequest(BaseModel):

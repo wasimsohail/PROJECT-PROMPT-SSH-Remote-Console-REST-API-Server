@@ -71,14 +71,16 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Add CORS middleware (only if enabled for security reasons)
+if config.cors_enabled and config.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=config.cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["X-API-Key", "Content-Type"],
+    )
+    logger.info(f"CORS enabled for origins: {config.cors_origins}")
 
 
 # Exception handler
